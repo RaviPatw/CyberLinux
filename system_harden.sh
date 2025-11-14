@@ -2,6 +2,7 @@
 # ============================
 # system_harden.sh
 # CyberPatriot-style System Hardening
+# Fully Fixed, Competition-Safe Version
 # ============================
 
 set -o errexit
@@ -15,17 +16,15 @@ STAMP="$(date +%Y%m%d-%H%M%S)"
 LOGFILE="/var/log/system_harden_${STAMP}.log"
 UNDO_FILE="/root/system_harden_undo_${STAMP}.sh"
 
-# Critical files to check permissions
 CRITICAL_FILES=(
     /etc/passwd
     /etc/shadow
     /etc/group
     /etc/gshadow
-    /etc/ssh/sshd_config
     /etc/sudoers
+    /etc/ssh/sshd_config
 )
 
-# Sysctl hardening parameters
 declare -A SYSCTL_PARAMS=(
     ["net.ipv4.ip_forward"]="0"
     ["net.ipv4.conf.all.send_redirects"]="0"
@@ -122,7 +121,7 @@ for key in "${!SYSCTL_PARAMS[@]}"; do
     val="${SYSCTL_PARAMS[$key]}"
     grep -q "^$key" "$SYSCTL_CONF" 2>/dev/null && sed -i -E "s|^$key.*|$key = $val|" "$SYSCTL_CONF" || echo "$key = $val" >> "$SYSCTL_CONF"
 done
-sysctl --system
+sysctl --system || log "[-] sysctl reload failed"
 append_undo "cp -f '${SYSCTL_CONF}.bak.${STAMP}' '$SYSCTL_CONF' && sysctl --system || true"
 
 # -------------------------
@@ -135,7 +134,6 @@ append_undo "apt-get -y purge auditd audispd-plugins || true; systemctl disable 
 
 AUDIT_RULES="/etc/audit/rules.d/cyberpatriot.rules"
 safe_backup "$AUDIT_RULES"
-
 cat > "$AUDIT_RULES" <<EOF
 # CyberPatriot audit rules
 -w /etc/passwd -p wa -k passwd_changes
@@ -146,7 +144,6 @@ cat > "$AUDIT_RULES" <<EOF
 -w /etc/ssh/sshd_config -p wa -k sshd_changes
 -w /var/log/ -p wa -k log_monitoring
 EOF
-
 systemctl restart auditd
 append_undo "cp -f '${AUDIT_RULES}.bak.${STAMP}' '$AUDIT_RULES' && systemctl restart auditd || true"
 
@@ -159,4 +156,3 @@ append_undo "echo 'Manual restore may be needed for /var/log permissions'"
 
 log "[+] System Hardening Completed"
 log "[+] Undo file created: $UNDO_FILE"
-

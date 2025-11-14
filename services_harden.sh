@@ -2,6 +2,7 @@
 # ============================
 # services_harden.sh
 # CyberPatriot-style Service/Daemon Hardening
+# Fully Fixed, Competition-Safe Version
 # ============================
 
 set -o errexit
@@ -15,19 +16,8 @@ STAMP="$(date +%Y%m%d-%H%M%S)"
 LOGFILE="/var/log/services_harden_${STAMP}.log"
 UNDO_FILE="/root/services_harden_undo_${STAMP}.sh"
 
-# List of services to check/disable if unnecessary
-SERVICES_TO_DISABLE=(
-    apache2
-    ftp
-    vsftpd
-    nfs-server
-    rpcbind
-    samba
-    telnet
-    dovecot
-)
+SERVICES_TO_DISABLE=(apache2 ftp vsftpd nfs-server rpcbind samba telnet dovecot)
 
-# Critical service configuration files
 SSH_CONF="/etc/ssh/sshd_config"
 APACHE_CONF="/etc/apache2/apache2.conf"
 FTP_CONF="/etc/vsftpd.conf"
@@ -57,6 +47,10 @@ safe_backup() {
     done
 }
 
+pkg_installed() {
+    dpkg-query -W -f='${Status} ${Package}\n' "$1" 2>/dev/null | grep -q "^install ok installed"
+}
+
 # -------------------------
 # Main execution
 # -------------------------
@@ -78,18 +72,20 @@ log "[*] Starting Service/Daemon Hardening (STAMP=$STAMP)"
 # SSH Hardening
 # -------------------------
 log "[*] Hardening SSH"
-safe_backup "$SSH_CONF"
-sed -i -E 's/^#?PermitRootLogin.*/PermitRootLogin no/' "$SSH_CONF"
-sed -i -E 's/^#?PasswordAuthentication.*/PasswordAuthentication yes/' "$SSH_CONF"
-sed -i -E 's/^#?PermitEmptyPasswords.*/PermitEmptyPasswords no/' "$SSH_CONF"
-sed -i -E 's/^#?X11Forwarding.*/X11Forwarding no/' "$SSH_CONF"
-systemctl restart ssh || systemctl restart sshd || true
-append_undo "cp -f '${SSH_CONF}.bak.${STAMP}' '$SSH_CONF' && systemctl restart ssh || systemctl restart sshd || true"
+if [[ -f "$SSH_CONF" ]]; then
+    safe_backup "$SSH_CONF"
+    sed -i -E 's/^#?PermitRootLogin.*/PermitRootLogin no/' "$SSH_CONF"
+    sed -i -E 's/^#?PasswordAuthentication.*/PasswordAuthentication yes/' "$SSH_CONF"
+    sed -i -E 's/^#?PermitEmptyPasswords.*/PermitEmptyPasswords no/' "$SSH_CONF"
+    sed -i -E 's/^#?X11Forwarding.*/X11Forwarding no/' "$SSH_CONF"
+    systemctl restart ssh || systemctl restart sshd || true
+    append_undo "cp -f '${SSH_CONF}.bak.${STAMP}' '$SSH_CONF' && systemctl restart ssh || systemctl restart sshd || true"
+fi
 
 # -------------------------
 # Apache Hardening
 # -------------------------
-if systemctl list-unit-files | grep -q '^apache2\.service'; then
+if pkg_installed apache2; then
     log "[*] Hardening Apache"
     safe_backup "$APACHE_CONF"
     sed -i -E 's/^#?ServerTokens.*/ServerTokens Prod/' "$APACHE_CONF"
@@ -99,15 +95,13 @@ if systemctl list-unit-files | grep -q '^apache2\.service'; then
     append_undo "cp -f '${APACHE_CONF}.bak.${STAMP}' '$APACHE_CONF' && systemctl restart apache2 || true"
 else
     log "[=] Apache not installed"
-    append_undo "echo 'Apache not installed'"
 fi
 
 # -------------------------
 # FTP Hardening
 # -------------------------
-if pkg_installed() { dpkg-query -W -f='${Status} ${Package}\n' "$1" 2>/dev/null | grep -q "^install ok installed"; }
 if pkg_installed vsftpd; then
-    log "[*] Hardening FTP (vsftpd)"
+    log "[*] Hardening FTP"
     safe_backup "$FTP_CONF"
     sed -i -E 's/^#?anonymous_enable.*/anonymous_enable=NO/' "$FTP_CONF"
     sed -i -E 's/^#?local_enable.*/local_enable=YES/' "$FTP_CONF"
@@ -116,7 +110,6 @@ if pkg_installed vsftpd; then
     append_undo "cp -f '${FTP_CONF}.bak.${STAMP}' '$FTP_CONF' && systemctl restart vsftpd || true"
 else
     log "[=] vsftpd not installed"
-    append_undo "echo 'vsftpd not installed'"
 fi
 
 # -------------------------
@@ -127,16 +120,17 @@ for s in "${SERVICES_TO_DISABLE[@]}"; do
     if systemctl list-unit-files | grep -q "^${s}\.service"; then
         systemctl stop "$s" || true
         systemctl disable "$s" || true
-        append_undo "systemctl enable '$s' || true; systemctl start '$s' || true"
+        append_undo "systemctl enable --now '$s' || true"
         log "[+] Disabled $s"
     fi
 done
 
 # -------------------------
-# Bonus: MySQL Hardening
+# MySQL Hardening
 # -------------------------
-if systemctl list-unit-files | grep -q '^mysql\.service'; then
+if pkg_installed mysql-server; then
     log "[*] Hardening MySQL"
+    # CP-safe: skip interactive prompts
     mysql_secure_installation <<EOF || true
 n
 y
@@ -149,4 +143,3 @@ fi
 
 log "[+] Service/Daemon Hardening Completed"
 log "[+] Undo file created: $UNDO_FILE"
-

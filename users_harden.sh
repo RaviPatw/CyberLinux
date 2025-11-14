@@ -2,6 +2,7 @@
 # ============================
 # users_harden.sh
 # CyberPatriot-style User & Account Hardening
+# Fully Fixed, Competition-Safe Version
 # ============================
 
 set -o errexit
@@ -14,10 +15,12 @@ set -o pipefail
 STAMP="$(date +%Y%m%d-%H%M%S)"
 LOGFILE="/var/log/users_harden_${STAMP}.log"
 UNDO_FILE="/root/users_harden_undo_${STAMP}.sh"
-PROTECTED_USERS=("root") # Add any manually protected accounts here
-AUTHORIZED_ADMINS=("admin")
-AUTHORIZED_USERS=("student1" "student2")
-LOCK_UID_MIN=1000       # Minimum UID to consider for auto-lock
+
+PROTECTED_USERS=("root" "sysadmin")       # Add any manually protected accounts
+AUTHORIZED_ADMINS=("admin")               # Must be non-root admins
+AUTHORIZED_USERS=("student1" "student2")  # Normal users allowed
+
+LOCK_UID_MIN=1000
 FAILED_ATTEMPTS=5
 UNLOCK_TIME=1800        # 30 minutes
 
@@ -38,11 +41,12 @@ ensure_root() {
 }
 
 safe_backup() {
-    local file="$1"
-    [[ -f "$file" ]] || return
-    cp -p "$file" "${file}.bak.${STAMP}"
-    append_undo "cp -f '${file}.bak.${STAMP}' '${file}' || true"
-    log "[+] Backed up $file"
+    for file in "$@"; do
+        [[ -f "$file" ]] || continue
+        cp -p "$file" "${file}.bak.${STAMP}"
+        append_undo "cp -f '${file}.bak.${STAMP}' '${file}' || true"
+        log "[+] Backed up $file"
+    done
 }
 
 lock_account_safe() {
@@ -51,8 +55,10 @@ lock_account_safe() {
         log "[*] Skipping protected user $user"
         return
     fi
-    usermod -L "$user" && log "[+] Locked account $user"
-    append_undo "usermod -U '$user' || true"
+    if id "$user" >/dev/null 2>&1; then
+        usermod -L "$user" && log "[+] Locked account $user"
+        append_undo "usermod -U '$user' || true"
+    fi
 }
 
 # -------------------------
@@ -72,13 +78,8 @@ chmod 700 "$UNDO_FILE"
 exec > >(tee -a "$LOGFILE") 2>&1
 log "[*] Starting User & Account Hardening (STAMP=$STAMP)"
 
-# Backup important files
-safe_backup /etc/passwd
-safe_backup /etc/shadow
-safe_backup /etc/group
-safe_backup /etc/login.defs
-safe_backup /etc/pam.d/common-auth
-safe_backup /etc/pam.d/common-password
+# Backup critical files
+safe_backup /etc/passwd /etc/shadow /etc/group /etc/login.defs /etc/pam.d/common-auth /etc/pam.d/common-password
 
 # -------------------------
 # Ensure authorized admins
@@ -121,14 +122,10 @@ done < /etc/passwd
 # PAM password policy enforcement
 # -------------------------
 log "[*] Enforcing PAM faillock (deny=${FAILED_ATTEMPTS}, unlock=${UNLOCK_TIME}s)"
-if ! grep -q "pam_faillock.so preauth" /etc/pam.d/common-auth; then
-    sed -i "1i auth required pam_faillock.so preauth silent deny=${FAILED_ATTEMPTS} unlock_time=${UNLOCK_TIME}" /etc/pam.d/common-auth
-    append_undo "cp -f /etc/pam.d/common-auth.bak.${STAMP} /etc/pam.d/common-auth || true"
-fi
-if ! grep -q "pam_faillock.so authfail" /etc/pam.d/common-auth; then
-    echo "auth [default=die] pam_faillock.so authfail deny=${FAILED_ATTEMPTS} unlock_time=${UNLOCK_TIME}" >> /etc/pam.d/common-auth
-    append_undo "cp -f /etc/pam.d/common-auth.bak.${STAMP} /etc/pam.d/common-auth || true"
-fi
+safe_backup /etc/pam.d/common-auth
+grep -q "pam_faillock.so preauth" /etc/pam.d/common-auth || sed -i "1i auth required pam_faillock.so preauth silent deny=${FAILED_ATTEMPTS} unlock_time=${UNLOCK_TIME}" /etc/pam.d/common-auth
+grep -q "pam_faillock.so authfail" /etc/pam.d/common-auth || echo "auth [default=die] pam_faillock.so authfail deny=${FAILED_ATTEMPTS} unlock_time=${UNLOCK_TIME}" >> /etc/pam.d/common-auth
+append_undo "cp -f /etc/pam.d/common-auth.bak.${STAMP} /etc/pam.d/common-auth || true"
 
 # -------------------------
 # Expire passwords for all users to force change on first login
@@ -142,4 +139,3 @@ done < /etc/passwd
 
 log "[+] User & Account Hardening Completed"
 log "[+] Undo file created: $UNDO_FILE"
-

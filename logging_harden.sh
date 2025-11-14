@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # ============================
 # logging_harden.sh
-# CyberPatriot-style Logging & Monitoring Hardening
+# CyberPatriot Logging & Monitoring Hardening
+# Fully Fixed, CP-safe Version
 # ============================
 
 set -o errexit
@@ -15,13 +16,14 @@ STAMP="$(date +%Y%m%d-%H%M%S)"
 LOGFILE="/var/log/logging_harden_${STAMP}.log"
 UNDO_FILE="/root/logging_harden_undo_${STAMP}.sh"
 
-# Files to backup/edit
+# Config paths
 RSYSLOG_CONF="/etc/rsyslog.conf"
 AUDITD_CONF="/etc/audit/auditd.conf"
 FAIL2BAN_CONF_DIR="/etc/fail2ban"
+FAIL2BAN_LOCAL="${FAIL2BAN_CONF_DIR}/jail.local"
 LOGROTATE_CONF="/etc/logrotate.conf"
 
-# Packages to install
+# Required packages
 REQUIRED_PKGS=(rsyslog auditd fail2ban logrotate)
 
 # -------------------------
@@ -66,7 +68,6 @@ set -e
 EOF
 chmod 700 "$UNDO_FILE"
 
-# Logging
 exec > >(tee -a "$LOGFILE") 2>&1
 log "[*] Starting Logging & Monitoring Hardening (STAMP=$STAMP)"
 
@@ -91,7 +92,7 @@ log "[*] Hardening Rsyslog"
 safe_backup "$RSYSLOG_CONF"
 sed -i -E 's/^#?\$FileCreateMode.*/$FileCreateMode 0640/' "$RSYSLOG_CONF"
 sed -i -E 's/^#?\$DirCreateMode.*/$DirCreateMode 0750/' "$RSYSLOG_CONF"
-systemctl restart rsyslog || true
+systemctl enable --now rsyslog || true
 append_undo "cp -f '${RSYSLOG_CONF}.bak.${STAMP}' '$RSYSLOG_CONF' && systemctl restart rsyslog || true"
 
 # -------------------------
@@ -109,18 +110,13 @@ append_undo "cp -f '${AUDITD_CONF}.bak.${STAMP}' '$AUDITD_CONF' && systemctl res
 # Fail2Ban Hardening
 # -------------------------
 log "[*] Hardening Fail2Ban"
-for j in "${FAIL2BAN_CONF_DIR}"/*.conf; do
-    safe_backup "$j"
-done
-
-# Configure default ban parameters
-if [[ -f "${FAIL2BAN_CONF_DIR}/jail.local" ]]; then
-    safe_backup "${FAIL2BAN_CONF_DIR}/jail.local"
-else
-    touch "${FAIL2BAN_CONF_DIR}/jail.local"
+mkdir -p "$FAIL2BAN_CONF_DIR"
+if [[ -f /etc/fail2ban/jail.conf && ! -f "$FAIL2BAN_LOCAL" ]]; then
+    cp /etc/fail2ban/jail.conf "$FAIL2BAN_LOCAL"
 fi
+safe_backup "$FAIL2BAN_LOCAL"
 
-cat > "${FAIL2BAN_CONF_DIR}/jail.local" <<'EOF'
+cat > "$FAIL2BAN_LOCAL" <<'EOF'
 [DEFAULT]
 bantime = 1800
 findtime = 600
@@ -129,7 +125,7 @@ backend = systemd
 EOF
 
 systemctl enable --now fail2ban || true
-append_undo "echo 'Manual undo may be required for fail2ban configuration'"
+append_undo "echo 'Manual undo may be required for Fail2Ban configuration'"
 
 # -------------------------
 # Logrotate Hardening
@@ -145,4 +141,3 @@ append_undo "cp -f '${LOGROTATE_CONF}.bak.${STAMP}' '$LOGROTATE_CONF' || true"
 # -------------------------
 log "[+] Logging & Monitoring Hardening Completed"
 log "[+] Undo file created: $UNDO_FILE"
-

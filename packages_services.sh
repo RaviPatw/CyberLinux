@@ -2,6 +2,7 @@
 # ============================
 # packages_services_harden.sh
 # CyberPatriot-style Package & Service Hardening
+# Fully Fixed, Competition-Safe Version
 # ============================
 
 set -o errexit
@@ -15,14 +16,13 @@ STAMP="$(date +%Y%m%d-%H%M%S)"
 LOGFILE="/var/log/packages_services_harden_${STAMP}.log"
 UNDO_FILE="/root/packages_services_harden_undo_${STAMP}.sh"
 
-# Prohibited packages (hacking tools)
+# Potentially dangerous packages
 PROHIBITED_TOOLS=(john hydra nmap zenmap metasploit-framework wireshark sqlmap aircrack-ng)
 
-# Services to secure
+# Services to enable/disable
 SERVICES_TO_ENABLE=(ssh ufw unattended-upgrades)
 SERVICES_TO_DISABLE=(telnet ftp vsftpd apache2 mysql)
 
-# Firewall rules
 SSH_PORT=22
 
 # -------------------------
@@ -42,7 +42,7 @@ ensure_root() {
 }
 
 pkg_installed() {
-    dpkg-query -W -f='${Status} ${Package}\n' "$1" 2>/dev/null | grep -q "^install ok installed" || return 1
+    dpkg-query -W -f='${Status} ${Package}\n' "$1" 2>/dev/null | grep -q "^install ok installed"
 }
 
 safe_purge_pkg() {
@@ -58,8 +58,7 @@ safe_purge_pkg() {
 safe_install_pkg() {
     local pkg="$1"
     if ! pkg_installed "$pkg"; then
-        DEBIAN_FRONTEND=noninteractive apt-get -y install "$pkg"
-        log "[+] Installed $pkg"
+        DEBIAN_FRONTEND=noninteractive apt-get -y install "$pkg" && log "[+] Installed $pkg"
         append_undo "apt-get -y purge '$pkg' || true"
     else
         log "[=] $pkg already installed"
@@ -90,11 +89,11 @@ log "[*] Removing prohibited hacking tools"
 for t in "${PROHIBITED_TOOLS[@]}"; do
     safe_purge_pkg "$t"
 done
-apt-get -y autoremove
+apt-get -y autoremove || true
 append_undo "apt-get -y install --no-install-recommends ${PROHIBITED_TOOLS[*]} || true"
 
 # -------------------------
-# Install & secure essential packages
+# Install essential packages
 # -------------------------
 log "[*] Installing essential security packages"
 for pkg in "${SERVICES_TO_ENABLE[@]}"; do
@@ -116,7 +115,7 @@ done
 # -------------------------
 # Disable & stop dangerous/unneeded services
 # -------------------------
-log "[*] Disabling & stopping unnecessary/dangerous services"
+log "[*] Disabling & stopping unnecessary services"
 for s in "${SERVICES_TO_DISABLE[@]}"; do
     if systemctl list-unit-files | grep -q "^${s}\.service"; then
         systemctl disable --now "$s"
@@ -129,13 +128,14 @@ done
 # SSH hardening
 # -------------------------
 SSH_CONF="/etc/ssh/sshd_config"
-safe_backup "$SSH_CONF"
-log "[*] Hardening SSH configuration"
-sed -i -E 's/^#?PermitRootLogin.*/PermitRootLogin no/' "$SSH_CONF"
-sed -i -E 's/^#?PasswordAuthentication.*/PasswordAuthentication yes/' "$SSH_CONF"
-sed -i -E 's/^#?X11Forwarding.*/X11Forwarding no/' "$SSH_CONF"
-systemctl restart ssh || systemctl restart sshd || true
-append_undo "cp -f '${SSH_CONF}.bak.${STAMP}' '$SSH_CONF' && systemctl restart ssh || systemctl restart sshd || true"
+if [[ -f "$SSH_CONF" ]]; then
+    cp -p "$SSH_CONF" "$SSH_CONF.bak.${STAMP}"
+    append_undo "cp -f '$SSH_CONF.bak.${STAMP}' '$SSH_CONF' || true"
+    sed -i -E 's/^#?PermitRootLogin.*/PermitRootLogin no/' "$SSH_CONF"
+    sed -i -E 's/^#?PasswordAuthentication.*/PasswordAuthentication yes/' "$SSH_CONF"
+    sed -i -E 's/^#?X11Forwarding.*/X11Forwarding no/' "$SSH_CONF"
+    systemctl restart ssh || systemctl restart sshd || true
+fi
 
 # -------------------------
 # UFW Firewall configuration
@@ -153,7 +153,9 @@ append_undo "ufw --force disable || true"
 APT_10="/etc/apt/apt.conf.d/10periodic"
 APT_20="/etc/apt/apt.conf.d/20auto-upgrades"
 APT_50="/etc/apt/apt.conf.d/50unattended-upgrades"
-safe_backup "$APT_10" "$APT_20" "$APT_50"
+for f in "$APT_10" "$APT_20" "$APT_50"; do
+    [[ -f "$f" ]] && cp -p "$f" "$f.bak.${STAMP}" && append_undo "cp -f '$f.bak.${STAMP}' '$f' || true"
+done
 
 cat > "$APT_10" <<EOF
 APT::Periodic::Update-Package-Lists "1";
@@ -170,11 +172,9 @@ EOF
 if [[ -f "$APT_50" ]]; then
     sed -i -E 's#^//\s*Unattended-Upgrade::Remove-Unused-Kernel-Packages.*#Unattended-Upgrade::Remove-Unused-Kernel-Packages "true";#' "$APT_50" || true
     sed -i -E 's#^//\s*Unattended-Upgrade::Remove-Unused-Dependencies.*#Unattended-Upgrade::Remove-Unused-Dependencies "true";#' "$APT_50" || true
-    append_undo "cp -f '${APT_50}.bak.${STAMP}' '${APT_50}' || true"
 fi
 
 systemctl enable --now unattended-upgrades.service || true
 
 log "[+] Package & Service Hardening Completed"
 log "[+] Undo file created: $UNDO_FILE"
-
