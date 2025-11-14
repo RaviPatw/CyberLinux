@@ -146,4 +146,3 @@ append_undo "cp -f '${LOGROTATE_CONF}.bak.${STAMP}' '$LOGROTATE_CONF' || true"
 log "[+] Logging & Monitoring Hardening Completed"
 log "[+] Undo file created: $UNDO_FILE"
 
-exit 0

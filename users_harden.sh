@@ -143,4 +143,3 @@ done < /etc/passwd
 log "[+] User & Account Hardening Completed"
 log "[+] Undo file created: $UNDO_FILE"
 
-exit 0

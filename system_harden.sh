@@ -160,4 +160,3 @@ append_undo "echo 'Manual restore may be needed for /var/log permissions'"
 log "[+] System Hardening Completed"
 log "[+] Undo file created: $UNDO_FILE"
 
-exit 0

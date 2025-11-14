@@ -161,4 +161,3 @@ log "[+] Rollback helper created: $ROLLBACK"
 log "[+] Undo file: $UNDO_FILE"
 
 log "[+] Completed Network & Service Purge & Hardening"
-exit 0

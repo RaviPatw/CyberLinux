@@ -178,4 +178,3 @@ systemctl enable --now unattended-upgrades.service || true
 log "[+] Package & Service Hardening Completed"
 log "[+] Undo file created: $UNDO_FILE"
 
-exit 0

@@ -114,4 +114,3 @@ append_undo "cp -f '${SYSCTL_CONF}.bak.${STAMP}' '$SYSCTL_CONF' && sysctl -p || 
 log "[+] Safe Filesystem & Kernel Hardening Completed"
 log "[+] Undo file created: $UNDO_FILE"
 
-exit 0
