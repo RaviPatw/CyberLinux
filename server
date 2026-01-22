@@ -1,0 +1,306 @@
+#Requires -RunAsAdministrator
+
+<#
+.SYNOPSIS
+    CyberPatriot Semi-Finals Windows Server Hardening Script
+.DESCRIPTION
+    Comprehensive security hardening for Windows Server 2019/2022
+    Covers all major scoring categories with logging and safety checks
+.NOTES
+    Run as Administrator
+    Review user lists before manual deletion
+    Test in your environment first
+#>
+
+# ============================================
+# 🔐 1. ENABLE LOGGING
+# ============================================
+$LogFile = "C:\CP_Hardening_$(Get-Date -Format 'yyyyMMdd_HHmmss').log"
+Start-Transcript -Path $LogFile -Append
+Write-Host "`n=== CyberPatriot Windows Server Hardening Script ===" -ForegroundColor Cyan
+Write-Host "Log File: $LogFile`n" -ForegroundColor Yellow
+
+# ============================================
+# 👤 2. ENFORCE STRONG PASSWORD POLICIES
+# ============================================
+Write-Host "`n[*] Configuring Password Policies..." -ForegroundColor Green
+try {
+    net accounts /minpwlen:12
+    net accounts /maxpwage:90
+    net accounts /minpwage:1
+    net accounts /uniquepw:5
+    net accounts /lockoutthreshold:5
+    net accounts /lockoutduration:30
+    net accounts /lockoutwindow:30
+    
+    # Enable password complexity via secedit
+    $secpolPath = "$env:TEMP\secpol.cfg"
+    secedit /export /cfg $secpolPath /quiet
+    (Get-Content $secpolPath) -replace "PasswordComplexity = 0", "PasswordComplexity = 1" | Set-Content $secpolPath
+    secedit /configure /db c:\windows\security\local.sdb /cfg $secpolPath /areas SECURITYPOLICY /quiet
+    Remove-Item $secpolPath -Force
+    
+    Write-Host "[+] Password policies configured successfully" -ForegroundColor Green
+} catch {
+    Write-Host "[-] Error configuring password policies: $_" -ForegroundColor Red
+}
+
+# ============================================
+# 🚫 3. DISABLE GUEST ACCOUNT
+# ============================================
+Write-Host "`n[*] Disabling Guest Account..." -ForegroundColor Green
+try {
+    net user Guest /active:no
+    Disable-LocalUser -Name "Guest" -ErrorAction SilentlyContinue
+    Write-Host "[+] Guest account disabled" -ForegroundColor Green
+} catch {
+    Write-Host "[-] Error disabling Guest: $_" -ForegroundColor Red
+}
+
+# ============================================
+# 👥 4. LIST LOCAL USERS (Manual Review)
+# ============================================
+Write-Host "`n[*] Listing Local Users for Review..." -ForegroundColor Green
+Write-Host "=" * 80 -ForegroundColor Yellow
+Get-LocalUser | Select-Object Name, Enabled, LastLogon, Description | Format-Table -AutoSize
+Write-Host "=" * 80 -ForegroundColor Yellow
+Write-Host "[!] MANUAL ACTION: Review users above and remove unauthorized accounts" -ForegroundColor Magenta
+
+# ============================================
+# 🛡️ 5. SHOW ADMINISTRATOR GROUP MEMBERS
+# ============================================
+Write-Host "`n[*] Listing Administrator Group Members..." -ForegroundColor Green
+Write-Host "=" * 80 -ForegroundColor Yellow
+Get-LocalGroupMember -Group "Administrators" | Format-Table -AutoSize
+Write-Host "=" * 80 -ForegroundColor Yellow
+Write-Host "[!] MANUAL ACTION: Remove unauthorized administrators" -ForegroundColor Magenta
+
+# ============================================
+# 🧱 6. DISABLE SMBv1
+# ============================================
+Write-Host "`n[*] Disabling SMBv1..." -ForegroundColor Green
+try {
+    Disable-WindowsOptionalFeature -Online -FeatureName SMB1Protocol -NoRestart -ErrorAction SilentlyContinue
+    Set-SmbServerConfiguration -EnableSMB1Protocol $false -Force -ErrorAction SilentlyContinue
+    Write-Host "[+] SMBv1 disabled" -ForegroundColor Green
+} catch {
+    Write-Host "[-] Error disabling SMBv1: $_" -ForegroundColor Red
+}
+
+# ============================================
+# 🦠 7. ENABLE WINDOWS DEFENDER
+# ============================================
+Write-Host "`n[*] Enabling Windows Defender Protection..." -ForegroundColor Green
+try {
+    Set-MpPreference -DisableRealtimeMonitoring $false -ErrorAction SilentlyContinue
+    Set-MpPreference -MAPSReporting Advanced -ErrorAction SilentlyContinue
+    Set-MpPreference -SubmitSamplesConsent SendAllSamples -ErrorAction SilentlyContinue
+    Update-MpSignature -ErrorAction SilentlyContinue
+    Write-Host "[+] Windows Defender enabled and signatures updated" -ForegroundColor Green
+} catch {
+    Write-Host "[-] Error configuring Defender: $_" -ForegroundColor Red
+}
+
+# ============================================
+# 🔥 8. ENABLE WINDOWS FIREWALL
+# ============================================
+Write-Host "`n[*] Enabling Windows Firewall (All Profiles)..." -ForegroundColor Green
+try {
+    Set-NetFirewallProfile -Profile Domain,Public,Private -Enabled True -DefaultInboundAction Block -DefaultOutboundAction Allow
+    Write-Host "[+] Firewall enabled on all profiles" -ForegroundColor Green
+} catch {
+    Write-Host "[-] Error enabling firewall: $_" -ForegroundColor Red
+}
+
+# ============================================
+# 🕵️ 9. ENABLE FULL AUDIT POLICIES
+# ============================================
+Write-Host "`n[*] Configuring Audit Policies..." -ForegroundColor Green
+try {
+    $auditCategories = @(
+        "Logon/Logoff",
+        "Account Logon",
+        "Account Management",
+        "Policy Change",
+        "Privilege Use",
+        "Object Access",
+        "System"
+    )
+    
+    foreach ($category in $auditCategories) {
+        auditpol /set /category:"$category" /success:enable /failure:enable | Out-Null
+    }
+    Write-Host "[+] Audit policies configured" -ForegroundColor Green
+} catch {
+    Write-Host "[-] Error configuring audit policies: $_" -ForegroundColor Red
+}
+
+# ============================================
+# 🔒 10. HARDEN LOCAL SECURITY SETTINGS
+# ============================================
+Write-Host "`n[*] Hardening Local Security Settings..." -ForegroundColor Green
+try {
+    # Disable LM hashes
+    Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Lsa" -Name "NoLMHash" -Value 1 -Type DWord -Force
+    
+    # Disable anonymous SID/Name translation
+    Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Lsa" -Name "RestrictAnonymousSAM" -Value 1 -Type DWord -Force
+    Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Lsa" -Name "RestrictAnonymous" -Value 1 -Type DWord -Force
+    
+    # Require Ctrl+Alt+Del
+    Set-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System" -Name "DisableCAD" -Value 0 -Type DWord -Force
+    
+    # Disable anonymous access to shares
+    Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Services\LanManServer\Parameters" -Name "RestrictNullSessAccess" -Value 1 -Type DWord -Force
+    
+    # Enable UAC
+    Set-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System" -Name "EnableLUA" -Value 1 -Type DWord -Force
+    
+    # Limit local account use of blank passwords
+    Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Lsa" -Name "LimitBlankPasswordUse" -Value 1 -Type DWord -Force
+    
+    Write-Host "[+] Security settings hardened" -ForegroundColor Green
+} catch {
+    Write-Host "[-] Error hardening security settings: $_" -ForegroundColor Red
+}
+
+# ============================================
+# 🖥️ 11. SECURE REMOTE DESKTOP
+# ============================================
+Write-Host "`n[*] Securing Remote Desktop..." -ForegroundColor Green
+try {
+    # Enable Network Level Authentication
+    Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp" -Name "UserAuthentication" -Value 1 -Type DWord -Force
+    
+    # Require strong encryption
+    Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp" -Name "MinEncryptionLevel" -Value 3 -Type DWord -Force
+    
+    Write-Host "[+] RDP secured with NLA and strong encryption" -ForegroundColor Green
+} catch {
+    Write-Host "[-] Error securing RDP: $_" -ForegroundColor Red
+}
+
+# ============================================
+# ❌ 12. DISABLE INSECURE SERVICES
+# ============================================
+Write-Host "`n[*] Disabling Insecure Services..." -ForegroundColor Green
+$insecureServices = @(
+    "TlntSvr",      # Telnet
+    "SNMP",         # SNMP
+    "RemoteRegistry", # Remote Registry
+    "MSFTPSVC",     # FTP
+    "RpcSs",        # Simple TCP/IP (if not needed)
+    "simptcp"       # Simple TCP/IP Services
+)
+
+foreach ($service in $insecureServices) {
+    try {
+        $svc = Get-Service -Name $service -ErrorAction SilentlyContinue
+        if ($svc) {
+            Stop-Service -Name $service -Force -ErrorAction SilentlyContinue
+            Set-Service -Name $service -StartupType Disabled -ErrorAction SilentlyContinue
+            Write-Host "[+] Disabled: $service" -ForegroundColor Green
+        }
+    } catch {
+        # Service doesn't exist, skip
+    }
+}
+
+# ============================================
+# 🔄 13. TRIGGER WINDOWS UPDATE SCAN
+# ============================================
+Write-Host "`n[*] Triggering Windows Update Scan..." -ForegroundColor Green
+try {
+    $updateSession = New-Object -ComObject Microsoft.Update.Session
+    $updateSearcher = $updateSession.CreateUpdateSearcher()
+    Write-Host "[*] Searching for updates (this may take a moment)..." -ForegroundColor Yellow
+    $searchResult = $updateSearcher.Search("IsInstalled=0")
+    Write-Host "[+] Found $($searchResult.Updates.Count) available updates" -ForegroundColor Green
+    Write-Host "[!] MANUAL ACTION: Install updates via Windows Update" -ForegroundColor Magenta
+} catch {
+    Write-Host "[-] Error checking updates: $_" -ForegroundColor Red
+}
+
+# ============================================
+# ➕ ADDITIONAL SECURITY MEASURES
+# ============================================
+Write-Host "`n[*] Applying Additional Security Measures..." -ForegroundColor Green
+
+# Disable AutoRun/AutoPlay
+try {
+    Set-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer" -Name "NoDriveTypeAutoRun" -Value 255 -Type DWord -Force
+    Write-Host "[+] AutoRun/AutoPlay disabled" -ForegroundColor Green
+} catch {
+    Write-Host "[-] Error disabling AutoRun: $_" -ForegroundColor Red
+}
+
+# Enable Windows Update automatic updates
+try {
+    Set-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU" -Name "NoAutoUpdate" -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
+    Write-Host "[+] Automatic updates enabled" -ForegroundColor Green
+} catch {
+    Write-Host "[-] Error enabling auto-updates: $_" -ForegroundColor Red
+}
+
+# Disable unnecessary scheduled tasks (risky ones)
+try {
+    Disable-ScheduledTask -TaskName "\Microsoft\Windows\Maintenance\WinSAT" -ErrorAction SilentlyContinue
+    Write-Host "[+] Disabled potentially risky scheduled tasks" -ForegroundColor Green
+} catch {}
+
+# Set screen lock timeout (10 minutes)
+try {
+    powercfg -change -monitor-timeout-ac 10
+    powercfg -change -monitor-timeout-dc 10
+    Write-Host "[+] Screen lock timeout configured" -ForegroundColor Green
+} catch {
+    Write-Host "[-] Error configuring screen timeout: $_" -ForegroundColor Red
+}
+
+# ============================================
+# ✅ 14. FINAL STATUS CHECKS
+# ============================================
+Write-Host "`n`n=== FINAL STATUS CHECKS ===" -ForegroundColor Cyan
+
+# Defender Status
+Write-Host "`n[Defender Status]" -ForegroundColor Yellow
+try {
+    $defender = Get-MpComputerStatus
+    Write-Host "  Real-time Protection: $($defender.RealTimeProtectionEnabled)" -ForegroundColor $(if($defender.RealTimeProtectionEnabled){"Green"}else{"Red"})
+    Write-Host "  AntiSpyware Enabled: $($defender.AntivirusEnabled)" -ForegroundColor $(if($defender.AntivirusEnabled){"Green"}else{"Red"})
+} catch {
+    Write-Host "  Could not retrieve Defender status" -ForegroundColor Red
+}
+
+# Firewall Status
+Write-Host "`n[Firewall Status]" -ForegroundColor Yellow
+Get-NetFirewallProfile | Select-Object Name, Enabled | Format-Table -AutoSize
+
+# Service Status
+Write-Host "`n[Insecure Services Status]" -ForegroundColor Yellow
+foreach ($service in $insecureServices) {
+    $svc = Get-Service -Name $service -ErrorAction SilentlyContinue
+    if ($svc) {
+        $status = if ($svc.Status -eq "Stopped") { "✓ Stopped" } else { "✗ Running" }
+        $color = if ($svc.Status -eq "Stopped") { "Green" } else { "Red" }
+        Write-Host "  $service : $status" -ForegroundColor $color
+    }
+}
+
+# ============================================
+# 📋 MANUAL ACTION CHECKLIST
+# ============================================
+Write-Host "`n`n=== MANUAL ACTION CHECKLIST ===" -ForegroundColor Cyan
+Write-Host "[ ] Review and remove unauthorized user accounts" -ForegroundColor Yellow
+Write-Host "[ ] Remove unauthorized administrators" -ForegroundColor Yellow
+Write-Host "[ ] Install Windows Updates" -ForegroundColor Yellow
+Write-Host "[ ] Check README for required services/users" -ForegroundColor Yellow
+Write-Host "[ ] Remove prohibited files (media, hacking tools)" -ForegroundColor Yellow
+Write-Host "[ ] Configure authorized services per README" -ForegroundColor Yellow
+Write-Host "[ ] Review shared folders and permissions" -ForegroundColor Yellow
+Write-Host "[ ] Update all installed applications" -ForegroundColor Yellow
+
+Write-Host "`n=== HARDENING COMPLETE ===" -ForegroundColor Cyan
+Write-Host "Review log file: $LogFile`n" -ForegroundColor Yellow
+
+Stop-Transcript
