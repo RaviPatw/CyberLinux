@@ -1,0 +1,78 @@
+#!/bin/bash
+# ==================================================
+# Simple Password Reset Script
+# Sets all authorized users to W1llH4ck4B4con!
+# EXCEPT benjamin (left completely untouched)
+# ==================================================
+
+set -euo pipefail
+
+if [[ $EUID -ne 0 ]]; then
+  echo "[-] Run with sudo"
+  exit 1
+fi
+
+ACTUAL_USER="${SUDO_USER:-$USER}"
+echo "[+] Running as root, current user: $ACTUAL_USER"
+
+# All authorized users
+AUTHORIZED_USERS=(
+  jpearson
+  rzane2
+  hspecter
+  llitt
+  awilliams
+  swheeler
+  mross
+  kbennett
+  pporter
+  baltman
+  rzane
+  scarter
+  dpaulson
+  gbodinski
+  kdurant
+  hgunderson
+  jkirkwood
+  skeller
+  zlawford
+)
+
+# The password to set for everyone (except benjamin)
+PASSWORD="W1llH4ck4B4con!"
+
+echo "[+] Setting passwords for authorized users..."
+echo "[!] SKIPPING benjamin (leaving completely untouched)"
+echo ""
+
+for user in "${AUTHORIZED_USERS[@]}"; do
+  if id "$user" &>/dev/null; then
+    echo "[*] Setting password for: $user"
+    echo "${user}:${PASSWORD}" | chpasswd
+    echo "[+] Done: $user"
+  else
+    echo "[!] User $user doesn't exist, skipping"
+  fi
+done
+
+# Make sure current user is protected
+if [[ "$ACTUAL_USER" != "benjamin" ]] && id "$ACTUAL_USER" &>/dev/null; then
+  echo ""
+  echo "[+] Ensuring $ACTUAL_USER (current user) has correct password..."
+  echo "${ACTUAL_USER}:${PASSWORD}" | chpasswd
+  echo "[+] Done: $ACTUAL_USER"
+fi
+
+echo ""
+echo "======================================================"
+echo "[+] PASSWORD RESET COMPLETE"
+echo "======================================================"
+echo ""
+echo "Password set for all users: W1llH4ck4B4con!"
+echo "User 'benjamin' was NOT modified"
+echo ""
+echo "You can now login as any user (except benjamin) with:"
+echo "Username: [any authorized user]"
+echo "Password: W1llH4ck4B4con!"
+echo ""
+echo "======================================================"
