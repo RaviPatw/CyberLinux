@@ -3,6 +3,7 @@
 # Advanced Security Hardening Script (Linux Mint 21)
 # CyberPatriot SMI Finals - Enhanced Edition
 # CRITICAL SERVICES: Apache2 and MySQL
+# NOTE: Benjamin is completely ignored (not touched at all)
 # ==================================================
 
 set -euo pipefail
@@ -28,18 +29,22 @@ LOGFILE="/var/log/security_hardening_mint21_advanced.log"
 exec > >(tee -a "$LOGFILE") 2>&1
 
 # ------------------------------
-# Authorized accounts
+# Users to completely ignore (never touch, never delete, never modify)
 # ------------------------------
-AUTHORIZED_ADMINISTRATORS=(benjamin jpearson rzane2 hspecter llitt awilliams swheeler)
-# Per prompt: exact passwords
+DO_NOT_TOUCH_USERS=("benjamin")
+
+# ------------------------------
+# Authorized accounts (BENJAMIN NOT INCLUDED - he is ignored completely)
+# ------------------------------
+AUTHORIZED_ADMINISTRATORS=(jpearson rzane2 hspecter llitt awilliams swheeler)
+
 declare -A ADMIN_PASSWORDS=(
-  [benjamin]='W1llH4ck4B4con!'
   [jpearson]='W1llH4ck4B4con!'
   [hspecter]='L1f3!W1llH4ck4B4con'
-  [llitt]='W1llH4ck4B4con'
-  [awilliams]='W1llH4ck4B4con'
-  [swheeler]='W1llH4ck4B4con'
-  [rzane2]='W1llH4ck4B4con'
+  [llitt]='W1llH4ck4B4con!'
+  [awilliams]='W1llH4ck4B4con!'
+  [swheeler]='W1llH4ck4B4con!'
+  [rzane2]='W1llH4ck4B4con!'
 )
 
 AUTHORIZED_USERS=(
@@ -121,7 +126,6 @@ apt-get install -y \
   audispd-plugins \
   apparmor \
   apparmor-utils \
-  aide \
   rkhunter \
   chkrootkit \
   lynis \
@@ -190,10 +194,6 @@ net.ipv4.tcp_max_syn_backlog = 2048
 net.ipv4.tcp_synack_retries = 2
 net.ipv4.tcp_syn_retries = 5
 
-# Disable IPv6 if not needed (adjust based on requirements)
-# net.ipv6.conf.all.disable_ipv6 = 1
-# net.ipv6.conf.default.disable_ipv6 = 1
-
 # Increase security of shared memory
 kernel.shmmax = 68719476736
 kernel.shmall = 4294967296
@@ -242,10 +242,6 @@ net.ipv4.tcp_keepalive_intvl = 15
 
 # Protect against time-wait assassination
 net.ipv4.tcp_rfc1337 = 1
-
-# Enable BBR congestion control (if kernel supports)
-# net.core.default_qdisc = fq
-# net.ipv4.tcp_congestion_control = bbr
 EOF
 
 echo "[+] Applying sysctl settings..."
@@ -259,6 +255,12 @@ echo "[*] Checking for unauthorized human users (UID >= 1000)..."
 for user in $(awk -F: '{print $1}' /etc/passwd); do
   # Never remove the current user!
   if [[ "$user" == "$ACTUAL_USER" ]]; then
+    continue
+  fi
+  
+  # NEVER touch users in DO_NOT_TOUCH list (e.g., benjamin)
+  if [[ " ${DO_NOT_TOUCH_USERS[*]} " =~ " ${user} " ]]; then
+    echo "[!] Skipping $user (on DO NOT TOUCH list - completely ignored)"
     continue
   fi
   
@@ -280,17 +282,51 @@ for user in $(awk -F: '{print $1}' /etc/passwd); do
 done
 
 # ------------------------------
+# Set admin passwords from ADMIN_PASSWORDS array
+# ------------------------------
+echo "[*] Setting administrator passwords as specified..."
+ADMIN_PASSFILE="$(mktemp)"
+trap 'rm -f "$ADMIN_PASSFILE"' EXIT
+
+for admin in "${AUTHORIZED_ADMINISTRATORS[@]}"; do
+  # Skip DO_NOT_TOUCH users
+  if [[ " ${DO_NOT_TOUCH_USERS[*]} " =~ " ${admin} " ]]; then
+    continue
+  fi
+  
+  if has_user "$admin"; then
+    if [[ -n "${ADMIN_PASSWORDS[$admin]:-}" ]]; then
+      echo "${admin}:${ADMIN_PASSWORDS[$admin]}" >> "$ADMIN_PASSFILE"
+      echo "[+] Queued password for $admin"
+    fi
+  fi
+done
+
+if [[ -s "$ADMIN_PASSFILE" ]]; then
+  chpasswd < "$ADMIN_PASSFILE"
+  echo "[+] Administrator passwords applied from ADMIN_PASSWORDS array"
+fi
+
+# ------------------------------
 # Sudo group enforcement
 # ------------------------------
 echo "[*] Enforcing sudo group membership..."
 current_sudo_members="$(getent group sudo | awk -F: '{print $4}' | tr ',' ' ')"
 for u in $current_sudo_members; do
   [[ -z "$u" ]] && continue
+  
   # Skip if this is the current user
   if [[ "$u" == "$ACTUAL_USER" ]]; then
     echo "[!] Protecting $u (current user) - keeping in sudo"
     continue
   fi
+  
+  # Skip DO_NOT_TOUCH users
+  if [[ " ${DO_NOT_TOUCH_USERS[*]} " =~ " ${u} " ]]; then
+    echo "[!] Skipping $u (on DO NOT TOUCH list) - keeping in sudo"
+    continue
+  fi
+  
   if [[ " ${AUTHORIZED_ADMINISTRATORS[*]} " =~ " ${u} " ]]; then
     echo "[+] Keeping sudo for: $u"
   else
@@ -327,7 +363,6 @@ chmod 0440 /etc/sudoers.d/cybersec-hardening
 # ------------------------------
 echo "[!] NOT locking root account to prevent lockout"
 echo "[!] Consider locking root manually after verifying sudo access works"
-# passwd -l root || true  # COMMENTED OUT TO PREVENT LOCKOUT
 
 # ------------------------------
 # SSH Hardening (optional - not critical service)
@@ -336,7 +371,6 @@ echo "[*] Hardening SSH configuration..."
 if [[ -f "$SSH_CONFIG" ]]; then
   cp "$SSH_CONFIG" "$SSH_CONFIG.bak.$(date -u +%Y%m%dT%H%M%SZ)"
 
-  # Create hardened SSH config
   cat >> "$SSH_CONFIG" << 'EOF'
 
 # CyberPatriot Security Hardening
@@ -407,17 +441,17 @@ sed -i -E "s/^(PASS_MIN_DAYS\s+).*/\1$PASS_MIN_DAYS/" /etc/login.defs
 sed -i -E "s/^(PASS_WARN_AGE\s+).*/\1$PASS_WARN_AGE/" /etc/login.defs
 sed -i -E "s/^(PASS_MIN_LEN\s+).*/\1$MIN_PASS_LENGTH/" /etc/login.defs
 
-# Apply to existing users (skip benjamin and current user)
+# Apply to existing users (skip current user and DO_NOT_TOUCH users)
 for u in "${ALL_AUTHORIZED_USERS[@]}"; do
   if has_user "$u"; then
-    # Skip benjamin completely
-    if [[ "$u" == "benjamin" ]]; then
-      echo "[!] Skipping benjamin (no modifications)"
-      continue
-    fi
     # Skip current user
     if [[ "$u" == "$ACTUAL_USER" ]]; then
       echo "[!] Skipping $ACTUAL_USER (current user)"
+      continue
+    fi
+    # Skip DO_NOT_TOUCH users
+    if [[ " ${DO_NOT_TOUCH_USERS[*]} " =~ " ${u} " ]]; then
+      echo "[!] Skipping $u (on DO NOT TOUCH list)"
       continue
     fi
     chage -M "$PASS_MAX_DAYS" -m "$PASS_MIN_DAYS" -W "$PASS_WARN_AGE" "$u" 2>/dev/null || true
@@ -445,7 +479,7 @@ if ! grep -q "pam_faillock.so" "$COMMON_ACCOUNT"; then
 fi
 
 # ------------------------------
-# Fail2Ban configuration (focused on Apache, not SSH)
+# Fail2Ban configuration (focused on Apache)
 # ------------------------------
 echo "[*] Configuring Fail2Ban for Apache..."
 systemctl enable --now fail2ban
@@ -510,7 +544,7 @@ ufw default deny routed
 ufw allow 80/tcp comment 'HTTP for Apache'
 ufw allow 443/tcp comment 'HTTPS for Apache'
 
-# SSH (optional, with rate limiting if needed)
+# SSH (optional, with rate limiting)
 ufw limit 22/tcp comment 'SSH rate limit'
 
 # Logging
@@ -617,15 +651,6 @@ EOF
 service auditd restart || true
 
 # ------------------------------
-# File integrity monitoring (AIDE)
-# ------------------------------
-echo "[*] Initializing AIDE database (this may take several minutes)..."
-aideinit || true
-if [[ -f /var/lib/aide/aide.db.new ]]; then
-  mv /var/lib/aide/aide.db.new /var/lib/aide/aide.db
-fi
-
-# ------------------------------
 # Chromium installation
 # ------------------------------
 echo "[*] Ensuring Chromium is installed and set as default..."
@@ -695,7 +720,7 @@ if ! grep -q "^tmpfs /tmp" /etc/fstab; then
 fi
 
 # ------------------------------
-# Password resets (SKIP BENJAMIN AND CURRENT USER)
+# Password resets for regular users (SKIP CURRENT USER AND DO_NOT_TOUCH)
 # ------------------------------
 AUTOLOGIN_USER="$(detect_autologin_user || true)"
 if [[ -n "$AUTOLOGIN_USER" ]]; then
@@ -704,17 +729,17 @@ fi
 
 if [[ "$RESET_PASSWORDS" == "true" ]]; then
   echo "[*] Resetting passwords for authorized users..."
-  for u in "${ALL_AUTHORIZED_USERS[@]}"; do
+  for u in "${AUTHORIZED_USERS[@]}"; do
     if has_user "$u"; then
-      # SKIP BENJAMIN COMPLETELY
-      if [[ "$u" == "benjamin" ]]; then
-        echo "[!] Skipping benjamin (no password reset)"
-        continue
-      fi
-      
       # Skip current user
       if [[ "$u" == "$ACTUAL_USER" ]]; then
         echo "[!] Skipping $ACTUAL_USER (current user - no password reset)"
+        continue
+      fi
+      
+      # Skip DO_NOT_TOUCH users
+      if [[ " ${DO_NOT_TOUCH_USERS[*]} " =~ " ${u} " ]]; then
+        echo "[!] Skipping $u (on DO NOT TOUCH list)"
         continue
       fi
       
@@ -749,7 +774,7 @@ if [[ -f "$A2_CONF" ]]; then
   # Hide Apache version
   sed -i 's/^ServerTokens.*/ServerTokens Prod/' "$A2_CONF"
   sed -i 's/^ServerSignature.*/ServerSignature Off/' "$A2_CONF"
-  a2enconf security
+  a2enconf security 2>/dev/null || true
 fi
 
 # Disable directory listing
@@ -816,12 +841,6 @@ chmod 640 /etc/mysql/my.cnf 2>/dev/null || true
 chown root:root /etc/mysql 2>/dev/null || true
 
 # ------------------------------
-# Disable USB storage (optional - uncomment if needed)
-# ------------------------------
-# echo "[*] Disabling USB storage..."
-# echo "install usb-storage /bin/true" > /etc/modprobe.d/disable-usb-storage.conf
-
-# ------------------------------
 # Enable process accounting
 # ------------------------------
 echo "[*] Enabling process accounting..."
@@ -839,10 +858,17 @@ echo "CRITICAL SERVICES STATUS:"
 echo "  ✓ Apache2: $(systemctl is-active apache2) - HTTP/HTTPS on ports 80/443"
 echo "  ✓ MySQL: $(systemctl is-active mysql) - Database server"
 echo ""
-echo "YOUR ACCESS PROTECTED:"
+echo "PROTECTION STATUS:"
 echo "  ✓ User '$ACTUAL_USER' protected and kept in sudo group"
-echo "  ✓ User 'benjamin' left untouched (no modifications)"
 echo "  ✓ Root account NOT locked (prevents lockout)"
+echo "  ✓ DO NOT TOUCH users: ${DO_NOT_TOUCH_USERS[*]} (completely ignored)"
+echo ""
+echo "ADMIN PASSWORDS SET:"
+for admin in "${AUTHORIZED_ADMINISTRATORS[@]}"; do
+  if has_user "$admin"; then
+    echo "  ✓ $admin"
+  fi
+done
 echo ""
 echo "Enhancements applied:"
 echo "  ✓ TCP SYN cookies enabled"
@@ -852,7 +878,6 @@ echo "  ✓ SSH hardened (strong ciphers, rate limiting)"
 echo "  ✓ Fail2Ban configured for Apache (primary focus)"
 echo "  ✓ AppArmor profiles enforced"
 echo "  ✓ Auditd monitoring system events"
-echo "  ✓ AIDE file integrity monitoring initialized"
 echo "  ✓ Enhanced password policies"
 echo "  ✓ UFW firewall with HTTP/HTTPS focus"
 echo "  ✓ Process accounting enabled"
@@ -861,9 +886,6 @@ echo "  ✓ Unnecessary services disabled"
 echo "  ✓ /tmp and shared memory hardened"
 echo ""
 echo "REMINDERS:"
-echo "  - Display manager: LightDM (unchanged)"
-echo "  - Timezone: UTC (unchanged)"
-echo "  - CCS Client/scoring: NOT modified"
 echo "  - Test sudo: Run 'sudo -v' to verify"
 echo "  - Test Apache: Visit http://localhost in browser"
 echo "  - Secure MySQL: Run 'sudo mysql_secure_installation'"
