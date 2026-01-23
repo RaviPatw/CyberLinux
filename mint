@@ -2,6 +2,7 @@
 # ==================================================
 # Advanced Security Hardening Script (Linux Mint 21)
 # CyberPatriot SMI Finals - Enhanced Edition
+# CRITICAL SERVICES: Apache2 and MySQL
 # ==================================================
 
 set -euo pipefail
@@ -14,6 +15,10 @@ if [[ $EUID -ne 0 ]]; then
   exit 1
 fi
 
+# Store the user who invoked sudo to protect them
+ACTUAL_USER="${SUDO_USER:-$USER}"
+echo "[!] Running as root, protecting user: $ACTUAL_USER"
+
 echo "[+] Starting ADVANCED Security Hardening for Linux Mint 21..."
 
 # ------------------------------
@@ -25,27 +30,42 @@ exec > >(tee -a "$LOGFILE") 2>&1
 # ------------------------------
 # Authorized accounts
 # ------------------------------
-AUTHORIZED_ADMINISTRATORS=(
-  "benjamin"
-  "rzane2"
-  "hspecter"
-  "llitt"
-  "mross"
+AUTHORIZED_ADMINISTRATORS=(benjamin jpearson rzane2 hspecter llitt awilliams swheeler)
+# Per prompt: exact passwords
+declare -A ADMIN_PASSWORDS=(
+  [benjamin]='W1llH4ck4B4con!'
+  [jpearson]='W1llH4ck4B4con!'
+  [hspecter]='L1f3!W1llH4ck4B4con'
+  [llitt]='W1llH4ck4B4con'
+  [awilliams]='W1llH4ck4B4con'
+  [swheeler]='W1llH4ck4B4con'
+  [rzane2]='W1llH4ck4B4con'
 )
 
 AUTHORIZED_USERS=(
-  "awilliams"
-  "swheeler"
-  "kbennett"
-  "pporter"
-  "baltman"
-  "rzane"
-  "scarter"
-  "dpaulson"
-  "gbodinski"
+  mross
+  kbennett
+  pporter
+  baltman
+  rzane
+  scarter
+  dpaulson
+  gbodinski
+  kdurant
+  hgunderson
+  jkirkwood
+  skeller
+  zlawford
 )
 
 ALL_AUTHORIZED_USERS=("${AUTHORIZED_ADMINISTRATORS[@]}" "${AUTHORIZED_USERS[@]}")
+
+# CRITICAL: Add current user to authorized admins if not already there
+if [[ ! " ${AUTHORIZED_ADMINISTRATORS[*]} " =~ " ${ACTUAL_USER} " ]]; then
+  echo "[!] Adding $ACTUAL_USER to authorized administrators to prevent lockout!"
+  AUTHORIZED_ADMINISTRATORS+=("$ACTUAL_USER")
+  ALL_AUTHORIZED_USERS+=("$ACTUAL_USER")
+fi
 
 # ------------------------------
 # Config
@@ -237,6 +257,11 @@ sysctl --system || true
 # ------------------------------
 echo "[*] Checking for unauthorized human users (UID >= 1000)..."
 for user in $(awk -F: '{print $1}' /etc/passwd); do
+  # Never remove the current user!
+  if [[ "$user" == "$ACTUAL_USER" ]]; then
+    continue
+  fi
+  
   uid="$(id -u "$user" 2>/dev/null || true)"
   [[ -z "$uid" ]] && continue
 
@@ -261,6 +286,11 @@ echo "[*] Enforcing sudo group membership..."
 current_sudo_members="$(getent group sudo | awk -F: '{print $4}' | tr ',' ' ')"
 for u in $current_sudo_members; do
   [[ -z "$u" ]] && continue
+  # Skip if this is the current user
+  if [[ "$u" == "$ACTUAL_USER" ]]; then
+    echo "[!] Protecting $u (current user) - keeping in sudo"
+    continue
+  fi
   if [[ " ${AUTHORIZED_ADMINISTRATORS[*]} " =~ " ${u} " ]]; then
     echo "[+] Keeping sudo for: $u"
   else
@@ -293,13 +323,14 @@ EOF
 chmod 0440 /etc/sudoers.d/cybersec-hardening
 
 # ------------------------------
-# Root login policy
+# Root login policy - DO NOT LOCK (prevents lockout)
 # ------------------------------
-echo "[*] Disabling direct root logins..."
-passwd -l root || true
+echo "[!] NOT locking root account to prevent lockout"
+echo "[!] Consider locking root manually after verifying sudo access works"
+# passwd -l root || true  # COMMENTED OUT TO PREVENT LOCKOUT
 
 # ------------------------------
-# SSH Hardening
+# SSH Hardening (optional - not critical service)
 # ------------------------------
 echo "[*] Hardening SSH configuration..."
 if [[ -f "$SSH_CONFIG" ]]; then
@@ -376,9 +407,19 @@ sed -i -E "s/^(PASS_MIN_DAYS\s+).*/\1$PASS_MIN_DAYS/" /etc/login.defs
 sed -i -E "s/^(PASS_WARN_AGE\s+).*/\1$PASS_WARN_AGE/" /etc/login.defs
 sed -i -E "s/^(PASS_MIN_LEN\s+).*/\1$MIN_PASS_LENGTH/" /etc/login.defs
 
-# Apply to existing users
+# Apply to existing users (skip benjamin and current user)
 for u in "${ALL_AUTHORIZED_USERS[@]}"; do
   if has_user "$u"; then
+    # Skip benjamin completely
+    if [[ "$u" == "benjamin" ]]; then
+      echo "[!] Skipping benjamin (no modifications)"
+      continue
+    fi
+    # Skip current user
+    if [[ "$u" == "$ACTUAL_USER" ]]; then
+      echo "[!] Skipping $ACTUAL_USER (current user)"
+      continue
+    fi
     chage -M "$PASS_MAX_DAYS" -m "$PASS_MIN_DAYS" -W "$PASS_WARN_AGE" "$u" 2>/dev/null || true
   fi
 done
@@ -404,9 +445,9 @@ if ! grep -q "pam_faillock.so" "$COMMON_ACCOUNT"; then
 fi
 
 # ------------------------------
-# Fail2Ban configuration
+# Fail2Ban configuration (focused on Apache, not SSH)
 # ------------------------------
-echo "[*] Configuring Fail2Ban..."
+echo "[*] Configuring Fail2Ban for Apache..."
 systemctl enable --now fail2ban
 
 cat > /etc/fail2ban/jail.local << 'EOF'
@@ -417,13 +458,6 @@ maxretry = 5
 destemail = root@localhost
 sendername = Fail2Ban
 action = %(action_mwl)s
-
-[sshd]
-enabled = true
-port = ssh
-logpath = /var/log/auth.log
-maxretry = 3
-bantime = 7200
 
 [apache-auth]
 enabled = true
@@ -446,26 +480,38 @@ enabled = true
 port = http,https
 logpath = /var/log/apache*/*error.log
 maxretry = 2
+
+[apache-nohome]
+enabled = true
+port = http,https
+logpath = /var/log/apache*/*error.log
+maxretry = 2
+
+[apache-botsearch]
+enabled = true
+port = http,https
+logpath = /var/log/apache*/*error.log
+maxretry = 2
 EOF
 
 systemctl restart fail2ban
 
 # ------------------------------
-# Firewall (UFW)
+# Firewall (UFW) - Focused on Apache
 # ------------------------------
-echo "[*] Configuring UFW with advanced rules..."
+echo "[*] Configuring UFW for Apache (HTTP/HTTPS)..."
 ufw --force reset
 
 ufw default deny incoming
 ufw default allow outgoing
 ufw default deny routed
 
-# Rate limiting on SSH
-ufw limit 22/tcp comment 'SSH rate limit'
+# Web services (CRITICAL)
+ufw allow 80/tcp comment 'HTTP for Apache'
+ufw allow 443/tcp comment 'HTTPS for Apache'
 
-# Web services
-ufw allow 80/tcp comment 'HTTP'
-ufw allow 443/tcp comment 'HTTPS'
+# SSH (optional, with rate limiting if needed)
+ufw limit 22/tcp comment 'SSH rate limit'
 
 # Logging
 ufw logging high
@@ -556,6 +602,14 @@ cat > /etc/audit/rules.d/cybersec.rules << 'EOF'
 # SSH configuration
 -w /etc/ssh/sshd_config -p wa -k sshd
 
+# Apache configuration
+-w /etc/apache2/apache2.conf -p wa -k apache
+-w /etc/apache2/sites-enabled/ -p wa -k apache
+
+# MySQL configuration
+-w /etc/mysql/my.cnf -p wa -k mysql
+-w /etc/mysql/mysql.conf.d/ -p wa -k mysql
+
 # Make configuration immutable
 -e 2
 EOF
@@ -620,7 +674,7 @@ if ! grep -q "/run/shm" /etc/fstab; then
 fi
 
 # ------------------------------
-# Disable unnecessary services
+# Disable unnecessary services (NOT apache2 or mysql)
 # ------------------------------
 echo "[*] Disabling unnecessary services..."
 SERVICES_TO_DISABLE=("avahi-daemon" "cups" "bluetooth" "isc-dhcp-server" "isc-dhcp-server6" "nfs-server" "rpcbind" "vsftpd" "snmpd")
@@ -641,7 +695,7 @@ if ! grep -q "^tmpfs /tmp" /etc/fstab; then
 fi
 
 # ------------------------------
-# Password resets
+# Password resets (SKIP BENJAMIN AND CURRENT USER)
 # ------------------------------
 AUTOLOGIN_USER="$(detect_autologin_user || true)"
 if [[ -n "$AUTOLOGIN_USER" ]]; then
@@ -652,6 +706,19 @@ if [[ "$RESET_PASSWORDS" == "true" ]]; then
   echo "[*] Resetting passwords for authorized users..."
   for u in "${ALL_AUTHORIZED_USERS[@]}"; do
     if has_user "$u"; then
+      # SKIP BENJAMIN COMPLETELY
+      if [[ "$u" == "benjamin" ]]; then
+        echo "[!] Skipping benjamin (no password reset)"
+        continue
+      fi
+      
+      # Skip current user
+      if [[ "$u" == "$ACTUAL_USER" ]]; then
+        echo "[!] Skipping $ACTUAL_USER (current user - no password reset)"
+        continue
+      fi
+      
+      # Skip autologin user
       if [[ -n "$AUTOLOGIN_USER" && "$u" == "$AUTOLOGIN_USER" ]]; then
         echo "[*] Skipping autologin account: $u"
         continue
@@ -666,14 +733,53 @@ if [[ "$RESET_PASSWORDS" == "true" ]]; then
 fi
 
 # ------------------------------
-# Ensure critical services are running
+# CRITICAL SERVICES: Ensure Apache2 and MySQL are running
 # ------------------------------
-echo "[*] Ensuring critical services are enabled..."
-systemctl enable --now ssh || systemctl enable --now sshd
-systemctl enable --now apache2
-systemctl enable --now mysql
+echo "[*] Ensuring CRITICAL services (Apache2 and MySQL) are enabled..."
 
-systemctl restart ssh || systemctl restart sshd
+# Apache2 - CRITICAL SERVICE
+echo "[+] Installing and configuring Apache2..."
+apt-get install -y apache2
+
+# Basic Apache2 security hardening
+A2_CONF="/etc/apache2/conf-available/security.conf"
+if [[ -f "$A2_CONF" ]]; then
+  [[ -f "${A2_CONF}.bak" ]] || cp "$A2_CONF" "${A2_CONF}.bak"
+  
+  # Hide Apache version
+  sed -i 's/^ServerTokens.*/ServerTokens Prod/' "$A2_CONF"
+  sed -i 's/^ServerSignature.*/ServerSignature Off/' "$A2_CONF"
+  a2enconf security
+fi
+
+# Disable directory listing
+a2dismod -f autoindex 2>/dev/null || true
+
+systemctl enable apache2 --now
+echo "[+] Apache2 enabled and running (CRITICAL SERVICE)"
+
+# MySQL - CRITICAL SERVICE
+echo "[+] Installing and configuring MySQL..."
+apt-get install -y mysql-server
+
+systemctl enable mysql --now
+echo "[+] MySQL enabled and running (CRITICAL SERVICE)"
+
+echo "[!] IMPORTANT: Run 'mysql_secure_installation' manually to:"
+echo "    - Set root password"
+echo "    - Remove anonymous users"
+echo "    - Disable remote root login"
+echo "    - Remove test database"
+
+# SSH - Optional (not critical)
+if systemctl list-unit-files | grep -qw sshd.service; then
+  systemctl enable sshd --now
+  systemctl restart sshd
+elif systemctl list-unit-files | grep -qw ssh.service; then
+  systemctl enable ssh --now
+  systemctl restart ssh
+fi
+echo "[+] SSH service enabled (optional, not critical)"
 
 # ------------------------------
 # Disable nginx if present
@@ -701,6 +807,14 @@ chmod 700 /etc/cron.hourly
 chmod 700 /etc/cron.monthly
 chmod 700 /etc/cron.weekly
 
+# Apache permissions
+chmod 640 /etc/apache2/apache2.conf 2>/dev/null || true
+chown root:root /etc/apache2 2>/dev/null || true
+
+# MySQL permissions
+chmod 640 /etc/mysql/my.cnf 2>/dev/null || true
+chown root:root /etc/mysql 2>/dev/null || true
+
 # ------------------------------
 # Disable USB storage (optional - uncomment if needed)
 # ------------------------------
@@ -721,25 +835,38 @@ echo "======================================================"
 echo "[+] ADVANCED HARDENING COMPLETE"
 echo "======================================================"
 echo ""
+echo "CRITICAL SERVICES STATUS:"
+echo "  ✓ Apache2: $(systemctl is-active apache2) - HTTP/HTTPS on ports 80/443"
+echo "  ✓ MySQL: $(systemctl is-active mysql) - Database server"
+echo ""
+echo "YOUR ACCESS PROTECTED:"
+echo "  ✓ User '$ACTUAL_USER' protected and kept in sudo group"
+echo "  ✓ User 'benjamin' left untouched (no modifications)"
+echo "  ✓ Root account NOT locked (prevents lockout)"
+echo ""
 echo "Enhancements applied:"
 echo "  ✓ TCP SYN cookies enabled"
 echo "  ✓ Kernel hardening (ASLR, ptrace restrictions, etc.)"
 echo "  ✓ Network hardening (IP forwarding disabled, anti-spoofing, etc.)"
 echo "  ✓ SSH hardened (strong ciphers, rate limiting)"
-echo "  ✓ Fail2Ban configured for SSH and Apache"
+echo "  ✓ Fail2Ban configured for Apache (primary focus)"
 echo "  ✓ AppArmor profiles enforced"
 echo "  ✓ Auditd monitoring system events"
 echo "  ✓ AIDE file integrity monitoring initialized"
 echo "  ✓ Enhanced password policies"
-echo "  ✓ UFW firewall with rate limiting"
+echo "  ✓ UFW firewall with HTTP/HTTPS focus"
 echo "  ✓ Process accounting enabled"
 echo "  ✓ Secure file permissions set"
 echo "  ✓ Unnecessary services disabled"
 echo "  ✓ /tmp and shared memory hardened"
 echo ""
-echo "CRITICAL REMINDERS:"
+echo "REMINDERS:"
 echo "  - Display manager: LightDM (unchanged)"
 echo "  - Timezone: UTC (unchanged)"
 echo "  - CCS Client/scoring: NOT modified"
-echo "  - Critical services: SSH, Apache2, MySQL (enabled)"
+echo "  - Test sudo: Run 'sudo -v' to verify"
+echo "  - Test Apache: Visit http://localhost in browser"
+echo "  - Secure MySQL: Run 'sudo mysql_secure_installation'"
 echo ""
+echo "Log file: $LOGFILE"
+echo "======================================================"
