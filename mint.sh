@@ -4,10 +4,10 @@
 # - Mint 21 only (no external repos)
 # - LightDM remains the display manager
 # - Chromium is the default browser
-# - FTP server (vsftpd) must remain operational
+# - Apache2 and MySQL must remain operational (CRITICAL SERVICES)
 # - Creates 'edarby' with temp password and forces password change
 # - Sets exact admin passwords from prompt; authorized users non-sudo
-# - UFW enabled; FTP and OpenSSH allowed
+# - UFW enabled; HTTP/HTTPS allowed for Apache2
 # - Daily unattended upgrades (10periodic / 50unattended-upgrades)
 # - Removes hacking tools and non-work media (with confirmation)
 # - DOES NOT touch CyberPatriot scoring software or CCS client
@@ -23,6 +23,10 @@ if [[ $EUID -ne 0 ]]; then
   exit 1
 fi
 
+# Store the user who invoked sudo to protect them
+ACTUAL_USER="${SUDO_USER:-$USER}"
+echo "[!] Running as root, protecting user: $ACTUAL_USER"
+
 STAMP="$(date +%Y%m%d-%H%M%S)"
 LOGFILE="/var/log/cp_mint21_hardening.log"
 exec > >(tee -a "$LOGFILE") 2>&1
@@ -31,30 +35,43 @@ echo "[+] Start @ $STAMP"
 # ------------------------------
 # Scenario: Authorized accounts
 # ------------------------------
-AUTHORIZED_ADMINISTRATORS=(benjamin jpearson hspecter llitt edarby)
+AUTHORIZED_ADMINISTRATORS=(benjamin jpearson rzane2 hspecter llitt awilliams swheeler)
 # Per prompt: exact passwords
 declare -A ADMIN_PASSWORDS=(
   [benjamin]='W1llH4ck4B4con!'
-  [jpearson]='Manag1ngP4rtner!'
-  [hspecter]='L1f3!5LikeTH1s'
-  [llitt]='ugotlittup'
+  [jpearson]='W1llH4ck4B4con!'
+  [hspecter]='L1f3!W1llH4ck4B4con'
+  [llitt]='W1llH4ck4B4con'
+  [awilliams]='W1llH4ck4B4con'
+  [swheeler]='W1llH4ck4B4con'
+  [rzane2]='W1llH4ck4B4con'
 )
 
 AUTHORIZED_USERS=(
-  dscott
-  nnesbitt
-  pporter
-  kbennett
   mross
+  kbennett
+  pporter
+  baltman
+  kbennett
   rzane
-  dpaulsen
-  shuntley
-  jpomaville
-  sbandaru
-  sthomas
+  scarter
+  dpaulson
+  gbodinski
+  kdurant
+  hgunderson
+  jkirkwood
+  skeller
+  zlawford
 )
 
 ALL_AUTHORIZED_USERS=("${AUTHORIZED_ADMINISTRATORS[@]}" "${AUTHORIZED_USERS[@]}")
+
+# CRITICAL: Add current user to authorized admins if not already there
+if [[ ! " ${AUTHORIZED_ADMINISTRATORS[*]} " =~ " ${ACTUAL_USER} " ]]; then
+  echo "[!] Adding $ACTUAL_USER to authorized administrators to prevent lockout!"
+  AUTHORIZED_ADMINISTRATORS+=("$ACTUAL_USER")
+  ALL_AUTHORIZED_USERS+=("$ACTUAL_USER")
+fi
 
 # ------------------------------
 # Basic apt hygiene (Mint 21 only)
@@ -86,26 +103,22 @@ for u in "${ALL_AUTHORIZED_USERS[@]}"; do
   ensure_user "$u"
 done
 
-# Create edarby with temp password and force change
-if id edarby &>/dev/null; then
-  echo "[*] Setting temporary password and forcing change for edarby..."
-else
-  echo "[*] Creating edarby..."
-  adduser --disabled-password --gecos "" edarby
-fi
 # Choose a competition-safe temporary password (you may change this at run):
-TMP_PASS="Temp-ChangeMe-123!"
-echo "edarby:${TMP_PASS}" | chpasswd
-chage -d 0 edarby
-echo "[+] edarby created/updated with temporary password and forced password change at next login."
+# TMP_PASS="Temp-ChangeMe-123!"
+# ensure_user "edarby"
+# echo "edarby:${TMP_PASS}" | chpasswd
+# chage -d 0 edarby
+# echo "[+] edarby created/updated with temporary password and forced password change at next login."
 
 # Set exact admin passwords from prompt
 echo "[*] Setting admin passwords per prompt..."
 ADMIN_PASSFILE="$(mktemp)"
 trap 'rm -f "$ADMIN_PASSFILE"' EXIT
-for a in benjamin jpearson hspecter llitt; do
+for a in benjamin jpearson hspecter llitt awilliams swheeler rzane2; do
   ensure_user "$a"
-  echo "${a}:${ADMIN_PASSWORDS[$a]}" >> "$ADMIN_PASSFILE"
+  if [[ -n "${ADMIN_PASSWORDS[$a]:-}" ]]; then
+    echo "${a}:${ADMIN_PASSWORDS[$a]}" >> "$ADMIN_PASSFILE"
+  fi
 done
 chpasswd < "$ADMIN_PASSFILE"
 echo "[+] Admin passwords applied."
@@ -114,12 +127,18 @@ echo "[+] Admin passwords applied."
 echo "[*] Enforcing sudo membership for admins and removing for non-admins..."
 for a in "${AUTHORIZED_ADMINISTRATORS[@]}"; do
   usermod -aG sudo "$a"
+  echo "[+] Added $a to sudo group"
 done
 
-# Remove unauthorized users from sudo
+# Remove unauthorized users from sudo (but NEVER remove current user)
 if getent group sudo >/dev/null; then
   for u in $(getent group sudo | cut -d: -f4 | tr ',' ' '); do
     [[ -z "$u" ]] && continue
+    # Skip if this is the current user
+    if [[ "$u" == "$ACTUAL_USER" ]]; then
+      echo "[!] Protecting $u (current user) - keeping in sudo"
+      continue
+    fi
     if [[ ! " ${AUTHORIZED_ADMINISTRATORS[*]} " =~ " ${u} " ]]; then
       echo "[*] Removing $u from sudo..."
       deluser "$u" sudo || true
@@ -130,6 +149,11 @@ fi
 # Remove unauthorized human users (uid >= 1000) with confirmation
 echo "[*] Checking for unauthorized non-system users..."
 for user in $(awk -F: '{print $1}' /etc/passwd); do
+  # Never remove the current user!
+  if [[ "$user" == "$ACTUAL_USER" ]]; then
+    continue
+  fi
+  
   uid="$(id -u "$user" 2>/dev/null || echo 0)"
   if [[ "$uid" -ge 1000 && "$user" != "nobody" ]]; then
     if [[ ! " ${ALL_AUTHORIZED_USERS[*]} " =~ " ${user} " ]]; then
@@ -177,89 +201,52 @@ fi
 echo "[+] Account lockout enabled (5 tries, 30 min)."
 
 # ------------------------------
-# UFW Firewall
+# UFW Firewall - FOR APACHE2 (not SSH/FTP)
 # ------------------------------
-echo "[*] Configuring UFW..."
+echo "[*] Configuring UFW for Apache2..."
 apt install -y ufw
 ufw --force enable
-ufw allow OpenSSH
-ufw allow ftp
-ufw allow 21/tcp
-echo "[+] UFW enabled; OpenSSH and FTP allowed."
+ufw allow 80/tcp    # HTTP for Apache2
+ufw allow 443/tcp   # HTTPS for Apache2
+echo "[+] UFW enabled; HTTP (80) and HTTPS (443) allowed for Apache2."
 ufw logging on
 
 # ------------------------------
-# FTP Server (vsftpd) - Must remain operational
+# APACHE2 - CRITICAL SERVICE (Must remain operational)
 # ------------------------------
-echo "[*] Ensuring vsftpd is installed and configured for local users only..."
-apt install -y vsftpd
+echo "[*] Ensuring Apache2 is installed and running..."
+apt install -y apache2
 
-VSFTPD_CONF="/etc/vsftpd.conf"
-[[ -f "${VSFTPD_CONF}.bak" ]] || cp "$VSFTPD_CONF" "${VSFTPD_CONF}.bak"
-
-# Ensure FTP directory exists
-mkdir -p /srv/afa
-chown root:root /srv/afa
-chmod 755 /srv/afa
-
-# Configure vsftpd for local users only
-cat > "$VSFTPD_CONF" <<'EOF'
-# vsftpd configuration - local users only
-listen=NO
-listen_ipv6=YES
-anonymous_enable=NO
-local_enable=YES
-write_enable=YES
-local_umask=022
-dirmessage_enable=YES
-use_localtime=YES
-xferlog_enable=YES
-connect_from_port_20=YES
-chroot_local_user=NO
-secure_chroot_dir=/var/run/vsftpd/empty
-pam_service_name=vsftpd
-rsa_cert_file=/etc/ssl/certs/ssl-cert-snakeoil.pem
-rsa_private_key_file=/etc/ssl/private/ssl-cert-snakeoil.key
-ssl_enable=NO
-pasv_enable=YES
-pasv_min_port=40000
-pasv_max_port=50000
-allow_writeable_chroot=YES
-local_root=/srv/afa
-EOF
-
-systemctl enable vsftpd --now
-echo "[+] vsftpd configured for local users only and running."
-
-# ------------------------------
-# SSHD configuration (keep enabled, port 22; root login disabled)
-# ------------------------------
-echo "[*] Configuring SSHD..."
-SSHD="/etc/ssh/sshd_config"
-[[ -f "${SSHD}.bak" ]] || cp "$SSHD" "${SSHD}.bak"
-
-# Ensure baseline options
-sed -ri 's/^\s*#?\s*Port\s+.*/Port 22/' "$SSHD"
-sed -ri 's/^\s*#?\s*PermitRootLogin\s+.*/PermitRootLogin no/' "$SSHD"
-if grep -q '^PasswordAuthentication' "$SSHD"; then
-  sed -ri 's/^\s*#?\s*PasswordAuthentication\s+.*/PasswordAuthentication yes/' "$SSHD"
-else
-  echo 'PasswordAuthentication yes' >> "$SSHD"
+# Basic Apache2 security hardening
+A2_CONF="/etc/apache2/conf-available/security.conf"
+if [[ -f "$A2_CONF" ]]; then
+  [[ -f "${A2_CONF}.bak" ]] || cp "$A2_CONF" "${A2_CONF}.bak"
+  
+  # Hide Apache version
+  sed -i 's/^ServerTokens.*/ServerTokens Prod/' "$A2_CONF"
+  sed -i 's/^ServerSignature.*/ServerSignature Off/' "$A2_CONF"
 fi
 
-# Optionally restrict to authorized users only
-if grep -q '^AllowUsers' "$SSHD"; then
-  sed -ri "s#^AllowUsers.*#AllowUsers ${ALL_AUTHORIZED_USERS[*]}#" "$SSHD"
-else
-  echo "AllowUsers ${ALL_AUTHORIZED_USERS[*]}" >> "$SSHD"
-fi
+# Disable directory listing if not already
+a2dismod -f autoindex 2>/dev/null || true
 
-systemctl enable ssh --now
-systemctl restart sshd
-echo "[+] SSHD enabled on boot and running; root login disabled."
+systemctl enable apache2 --now
+echo "[+] Apache2 configured, hardened, and running."
 
-# Also lock local root account to prevent tty login
-passwd -l root && echo "[+] Local root account locked."
+# ------------------------------
+# MYSQL - CRITICAL SERVICE (Must remain operational)
+# ------------------------------
+echo "[*] Ensuring MySQL is installed and running..."
+apt install -y mysql-server
+
+systemctl enable mysql --now
+echo "[+] MySQL installed and running."
+
+echo "[!] IMPORTANT: Run 'mysql_secure_installation' manually to:"
+echo "    - Set root password"
+echo "    - Remove anonymous users"
+echo "    - Disable remote root login"
+echo "    - Remove test database"
 
 # ------------------------------
 # LightDM (do not change; warn if not default)
@@ -345,7 +332,7 @@ for pat in "${MEDIA_PATTERNS[@]}"; do
 done
 
 # ------------------------------
-# Disable unneeded services (but NOT vsftpd, sshd, or scoring client)
+# Disable unneeded services (NOT apache2, mysql, or scoring client)
 # ------------------------------
 maybe_disable() {
   local svc="$1"
@@ -359,28 +346,48 @@ maybe_disable() {
   fi
 }
 
-echo "[*] Disabling unneeded network-advertising/servers (if present)..."
+echo "[*] Disabling unneeded network services (if present)..."
 maybe_disable avahi-daemon
-maybe_disable apache2
+maybe_disable vsftpd
+maybe_disable ssh
 maybe_disable nginx
-# ssh and vsftpd stay enabled by requirement
+# apache2 and mysql stay enabled by requirement - DO NOT DISABLE
+
+# ------------------------------
+# DO NOT LOCK ROOT (prevents lockout)
+# ------------------------------
+echo "[!] NOT locking root account to prevent lockout"
+echo "[!] Consider locking root manually after verifying sudo access works"
 
 # ------------------------------
 # Final Reminders (non-automatable tasks)
 # ------------------------------
-cat <<'NOTE'
+cat <<NOTE
 
 =====================================================================
+SCRIPT COMPLETED - CRITICAL SERVICES STATUS:
+- Apache2: $(systemctl is-active apache2) (HTTP server on ports 80/443)
+- MySQL: $(systemctl is-active mysql) (Database server)
+
+YOUR SUDO ACCESS: Confirmed for user '$ACTUAL_USER'
+
 REMINDERS (do these manually):
 - Unique Identifier: Double-click the "CyberPatriot Set Unique Identifier" icon
   on the Desktop and enter your valid ID ASAP.
 - Forensics Questions: Answer any Desktop "Forensics Questions" before changing
   system settings that might affect them.
-- FTP Directory: Verify /srv/afa/ contains appropriate files and permissions.
+- MySQL Security: Run 'sudo mysql_secure_installation' to secure MySQL
+- Test Apache2: Visit http://localhost in browser to verify it's working
+- Verify you can still use sudo: Try 'sudo -v' to confirm
+
+LOCKOUT PROTECTION APPLIED:
+- User '$ACTUAL_USER' protected and kept in sudo group
+- Root account NOT locked (lock manually if desired)
 =====================================================================
 
 NOTE
 
 echo "[+] Completed successfully on Mint 21."
-echo "[+] Critical services running: vsftpd (FTP), sshd (SSH)"
-exit 0   
+echo "[+] Critical services: Apache2 ($(systemctl is-active apache2)), MySQL ($(systemctl is-active mysql))"
+echo "[+] Your sudo access protected for: $ACTUAL_USER"
+exit 0
